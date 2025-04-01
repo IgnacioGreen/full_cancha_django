@@ -1,3 +1,23 @@
+
+<div id="app">
+    <h1>[[ message ]]</h1>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/vue@3"></script>
+<script>
+    const app = Vue.createApp({
+    delimiters: ['[[', ']]'], // Cambia los delimitadores a [[ ]]
+    data() {
+        return {
+            message: 'Hello from Vue!',
+        };
+    },
+});
+app.mount('#app');
+</script>
+
+
+<!--
 {% extends 'base/main.html' %}
 {% block content %}
 

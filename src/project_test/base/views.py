@@ -1,76 +1,135 @@
-from django.shortcuts import redirect
-from django.views.generic.list import ListView
-from django.views.generic.detail import DetailView
-from django.views.generic.edit import CreateView, UpdateView, DeleteView, FormView
-from django.contrib.auth.forms import UserCreationForm
-from django.contrib.auth import login
-from django.contrib.auth.views import LoginView
-from django.contrib.auth.decorators import login_required
-from django.contrib.auth.mixins import LoginRequiredMixin
+from django.contrib.auth import authenticate
+from django.contrib.auth.models import User
 from django.urls import reverse_lazy
-from .models import Task
+from .models import Event
+from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework.response import Response
+from rest_framework.views import APIView
+from rest_framework import status, viewsets
+from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.decorators import action
+from .serializers import EventSerializer
 
 
-class Logueo(LoginView):
-    template_name = 'base/login.html'
-    field = '__all__'
-    redirect_authenticated_user = True
+class LoginView(APIView):  # True si la contraseña es correcta
+    permission_classes = [AllowAny]
 
-    def get_success_url(self):
-        return reverse_lazy('tasks')
+    def post(self, request):
+        username = request.data.get("username")
+        password = request.data.get("password")
 
-
-class RegisterPage(FormView):
-    template_name = 'base/register_user.html'
-    form_class = UserCreationForm
-    redirect_authenticated_user = True
-    success_url = reverse_lazy('tasks')
-
-    def form_valid(self, form):
-        user = form.save()
+        user = authenticate(username=username, password=password)
         if user is not None:
-            login(self.request, user)
-        return super(RegisterPage, self).form_valid(form)
+            refresh = RefreshToken.for_user(user)
+            return Response({
+                "refresh": str(refresh),
+                "access": str(refresh.access_token)
+            })
+        return Response({"error": "Credenciales inválidas"}, status=400)
+    
+class EventViewSet(viewsets.ModelViewSet):
+    queryset = Event.objects.all()
+    serializer_class = EventSerializer
+    permission_classes = [IsAuthenticated]  # Solo los usuarios autenticados pueden acceder
 
-    def get(self, *args, **kwargs):
-        if self.request.user.is_authenticated:
-            return redirect('tasks')
-        return super(RegisterPage, self).get(*args, **kwargs)
+    # 🔹 Personalizar el queryset para que un usuario solo vea sus eventos
+    def get_queryset(self):
+        return Event.objects.filter(created_by=self.request.user)
+
+    # 🔹 Obtener todos los eventos del usuario autenticado
+    @action(detail=False, methods=['get'])
+    def my_events(self, request):
+        user_events = Event.objects.filter(created_by=request.user)
+        serializer = self.get_serializer(user_events, many=True)
+        return Response(serializer.data)
+
+    # 🔹 Obtener un evento específico por ID
+    @action(detail=True, methods=['get'])
+    def get_event_by_id(self, request, pk=None):
+        try:
+            event = Event.objects.get(id=pk, created_by=request.user)
+            serializer = self.get_serializer(event)
+            return Response(serializer.data)
+        except Event.DoesNotExist:
+            return Response({"error": "Evento no encontrado"}, status=404)
+
+    # 🔹 Crear un nuevo evento
+    def create(self, request, *args, **kwargs):
+        # Agregar el usuario que crea el evento
+        request.data['created_by'] = request.user.id
+        serializer = self.get_serializer(data=request.data)
+        if serializer.is_valid():
+            serializer.save(created_by=request.user, modified_by=request.user)
+            return Response(serializer.data, status=201)  # Evento creado
+        return Response(serializer.errors, status=400)
+
+    # 🔹 Modificar un evento existente
+    def update(self, request, *args, **kwargs):
+        evento = self.get_object()  # Obtiene el evento por el ID
+        if evento.created_by != request.user:
+            return Response({"error": "No tienes permiso para modificar este evento"}, status=403)
+
+        serializer = self.get_serializer(evento, data=request.data, partial=True)  # Modificación parcial
+        if serializer.is_valid():
+            serializer.save(modified_by=request.user)
+            return Response(serializer.data)  # Evento actualizado
+        return Response(serializer.errors, status=400)
+
+    # 🔹 Eliminar un evento
+    def destroy(self, request, *args, **kwargs):
+        evento = self.get_object()  # Obtiene el evento por el ID
+        if evento.created_by != request.user:
+            return Response({"error": "No tienes permiso para eliminar este evento"}, status=403)
+
+        evento.delete()  # Elimina el evento
+        return Response({"message": "Evento eliminado con éxito"}, status=204)
+
+class EventAPI(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        evento_id = request.data.get("id", None)
+
+        if evento_id:
+            try:
+                evento = Event.objects.get(id=evento_id)
+                serializer = EventSerializer(evento, data=request.data, partial=True)
+                if serializer.is_valid():
+                    serializer.save(modified_by=request.user)
+                    return Response(serializer.data, status=status.HTTP_200_OK)  # Código 200 para actualización
+                return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+            except Event.DoesNotExist:
+                return Response({"error": "Evento no encontrado"}, status=status.HTTP_404_NOT_FOUND)
+        else:
+            serializer = EventSerializer(data=request.data)
+            if serializer.is_valid():
+                serializer.save(created_by=request.user)
+                return Response(serializer.data, status=status.HTTP_201_CREATED)  # Código 201 para creación
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+usuario = User.objects.get(username="ignaciog")
+class GetEvents(APIView):
+    # Event.objects.all().delete()
+    def get(self, request):
+        events = Event.objects.filter(created_by=usuario).order_by('start')
+        serializer = EventSerializer(events, many=True)
+        return Response(serializer.data)
+    
+class GetEventById(APIView):
+    def get(self, request, id):
+        try:
+            evento = Event.objects.get(id=id)
+            serializer = EventSerializer(evento)
+            return Response(serializer.data, status=status.HTTP_200_OK)
+        except Event.DoesNotExist:
+            return Response({"error": "Evento no encontrado"}, status=status.HTTP_404_NOT_FOUND)
 
 
-class PendingsList(LoginRequiredMixin, ListView):
-    model = Task
-    context_object_name = 'tasks'
-
-    def get_context_data(self, **kwargs):
-        context = super().get_context_data(**kwargs)
-        context['tasks'] = context['tasks'].filter(user=self.request.user)
-        context['count'] = context['tasks'].filter(done=False).count()
-
-        search_value = self.request.GET.get('search-text') or ''
-        if search_value:
-            context['tasks'] = context['tasks'].filter(title__icontains=search_value)
-        context['search_value'] = search_value
-        return context
-
-
-class CreateTask(LoginRequiredMixin, CreateView):
-    model = Task
-    fields = ['title', 'description', 'done']
-    success_url = reverse_lazy('tasks')
-
-    def form_valid(self, form):
-        form.instance.user = self.request.user
-        return super(CreateTask, self).form_valid(form)
-
-
-class EditTask(LoginRequiredMixin, UpdateView):
-    model = Task
-    fields = ['title', 'description', 'done']
-    success_url = reverse_lazy('tasks')
-
-
-class DeleteTask(LoginRequiredMixin, DeleteView):
-    model = Task
-    context_object_name = 'task'
-    success_url = reverse_lazy('tasks')
+class DeleteEvent(APIView):
+    def get(self, request, id):
+        try:
+            evento = Event.objects.get(id=id)
+            serializer = EventSerializer(evento)
+            return Response(serializer.data, status=status.HTTP_200_OK)
+        except Event.DoesNotExist:
+            return Response({"error": "Evento no encontrado"}, status=status.HTTP_404_NOT_FOUND)

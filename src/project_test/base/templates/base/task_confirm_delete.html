@@ -1,5 +1,7 @@
 {% extends 'base/main.html' %}
 {% block content %}
+<script src="https://cdn.jsdelivr.net/npm/vue@3"></script>
+<div id="app">
 <div class="top-bar">
     <a href="{% url 'tasks' %}">&#x1F860;</a>
 </div>
@@ -10,4 +12,15 @@
         <input class="button" type="submit" value="Delete">
     </form>
 </div>
+</div>
+<script>
+    const app = Vue.createApp({
+        data() {
+            return {
+                message: 'Hello from Vue!',
+            };
+        },
+    });
+    app.mount('#app');
+</script>
 {% endblock content %}
